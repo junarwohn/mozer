@@ -23,7 +23,9 @@ from threading import currentThread
 # return output node info and input node info (original node number)
 # [ [graph1, [input node ("{original node},,,")], [output node] "{original node,,,}"], [graph2, [input node], [output node]],,, ]
 # Sliced by range (start, end]
-class TVMSlicer:
+class Slicer:
+
+    # initialized by interface, graph config (json),  
     #def __init__(self, graph_config='', slicing_point=[[]]):
     def __init__(self, graph_config=''):
         if isinstance(graph_config, str):
@@ -32,6 +34,33 @@ class TVMSlicer:
             except:
                 return
         self.graph_config = copy.deepcopy(graph_config)
+
+    def from_keras(self, path, target, opt_level):
+        import tensorflow as tf
+        import tvm
+        import tvm.relay as relay
+
+        keras_model = tf.keras.models.load_model(path)
+        input_data = input_data.transpose([0, 3, 1, 2])
+        shape_dict = {"input_1": input_data.shape}
+        mod, params = relay.frontend.from_keras(keras_model, shape_dict)
+
+        if target == 'llvm':
+            dev = tvm.cpu()
+        elif target == 'cuda':
+            dev = tvm.cuda()
+        elif target == 'opencl':
+            dev = tvm.opencl()
+        
+        with tvm.transform.PassContext(opt_level=opt_level):
+            lib = relay.build(mod, target, params=params)
+        
+        return 0
+
+    def from_tvm(self, path):
+        import tvm
+
+        return 0
 
     def get_inputs(self):
         return [[i, g] for i, g in enumerate(zip(self.group, self.front_req, self.back_req))]
@@ -182,5 +211,4 @@ class TVMSlicer:
             if len(node['inputs']) != 0:
                 intermediate_nodes.append(idx)
         return intermediate_nodes
-
 
