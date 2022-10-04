@@ -63,9 +63,7 @@ def UNet(in_dim, out_dim, num_filter, input_shape=(256,256), mutation=[0, 0, 0, 
     down_1 = _conv_block_2(in_data=input_layer, out_dim=num_filter)
     pool_1 = _maxpool(down_1)
     #- mutation-deep 0
-    _num_filter = original_num_filter
-    for i in range(sum(mutation[0:0])):
-        _num_filter = _num_filter // 2
+    _num_filter = num_filter
     for i in range(mutation[0]):
         down_1 = _mutate_reduction(down_1, _num_filter)
         _num_filter = _num_filter // 2
@@ -80,9 +78,7 @@ def UNet(in_dim, out_dim, num_filter, input_shape=(256,256), mutation=[0, 0, 0, 
     down_2 = _conv_block_2(in_data=pool_1, out_dim=num_filter)
     pool_2 = _maxpool(down_2)
     #- mutation-deep 1
-    _num_filter = original_num_filter
-    for i in range(sum(mutation[0:1])):
-        _num_filter = _num_filter // 2
+    _num_filter = num_filter
     for i in range(mutation[1]):
         down_2 = _mutate_reduction(down_2, _num_filter)
         _num_filter = _num_filter // 2
@@ -97,9 +93,7 @@ def UNet(in_dim, out_dim, num_filter, input_shape=(256,256), mutation=[0, 0, 0, 
     down_3 = _conv_block_2(in_data=pool_2, out_dim=num_filter)
     pool_3 = _maxpool(down_3)
     #- mutation-deep 2
-    _num_filter = original_num_filter
-    for i in range(sum(mutation[0:2])):
-        _num_filter = _num_filter // 2
+    _num_filter = num_filter
     for i in range(mutation[2]):
         down_3 = _mutate_reduction(down_3, _num_filter)
         _num_filter = _num_filter // 2
@@ -114,9 +108,7 @@ def UNet(in_dim, out_dim, num_filter, input_shape=(256,256), mutation=[0, 0, 0, 
     down_4 = _conv_block_2(in_data=pool_3, out_dim=num_filter)
     pool_4 = _maxpool(down_4)
     #- mutation-deep 3
-    _num_filter = original_num_filter
-    for i in range(sum(mutation[0:3])):
-        _num_filter = _num_filter // 2
+    _num_filter = num_filter
     for i in range(mutation[3]):
         down_4 = _mutate_reduction(down_4, _num_filter)
         _num_filter = _num_filter // 2
@@ -140,8 +132,8 @@ def UNet(in_dim, out_dim, num_filter, input_shape=(256,256), mutation=[0, 0, 0, 
     trans_1 = _conv_trans_block(in_data=bridge, out_dim=num_filter)
     
     #- mutation-shallow 3
-    _num_filter = original_num_filter
-    for i in range(sum(mutation[0:4])):
+    _num_filter = num_filter
+    for i in range(mutation[3]):
         _num_filter = _num_filter // 2
     for i in range(mutation[3]):
         _num_filter *= 2
@@ -161,8 +153,8 @@ def UNet(in_dim, out_dim, num_filter, input_shape=(256,256), mutation=[0, 0, 0, 
     trans_2 = _conv_trans_block(in_data=up_1, out_dim=num_filter)
 
     #- mutation-shallow 2
-    _num_filter = original_num_filter
-    for i in range(sum(mutation[0:3])):
+    _num_filter = num_filter
+    for i in range(mutation[2]):
         _num_filter = _num_filter // 2
     for i in range(mutation[2]):
         _num_filter *= 2
@@ -182,8 +174,8 @@ def UNet(in_dim, out_dim, num_filter, input_shape=(256,256), mutation=[0, 0, 0, 
     trans_3 = _conv_trans_block(in_data=up_2, out_dim=num_filter)
     
     #- mutation-shallow 1
-    _num_filter = original_num_filter
-    for i in range(sum(mutation[0:2])):
+    _num_filter = num_filter
+    for i in range(mutation[1]):
         _num_filter = _num_filter // 2
     for i in range(mutation[1]):
         _num_filter *= 2
@@ -203,8 +195,8 @@ def UNet(in_dim, out_dim, num_filter, input_shape=(256,256), mutation=[0, 0, 0, 
     trans_4 = _conv_trans_block(in_data=up_3, out_dim=num_filter)
 
     #- mutation-shallow 0
-    _num_filter = original_num_filter
-    for i in range(sum(mutation[0:1])):
+    _num_filter = num_filter
+    for i in range(mutation[0]):
         _num_filter = _num_filter // 2
     for i in range(mutation[0]):
         _num_filter *= 2
