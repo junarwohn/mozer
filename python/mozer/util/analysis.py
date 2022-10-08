@@ -4,5 +4,9 @@ import os
 import json
 import pygraphviz as pgv
 
-def graph_analyze():
+
+def time():
+    return 0
+
+def graph_visualize():
     return 0
