@@ -1,4 +1,12 @@
-# mozer
+# MOZER : a Model OptimiZER utility
+
+MOZER is a Python package that provides various features:
+
+- Automatically partition deep neural networks model.
+
+- Add quantization layer to sliced layer
+
+- To be added..
 
 ## Python Package Installation
 
