@@ -6,6 +6,10 @@ from re import M
 from sys import excepthook
 from collections import defaultdict
 from threading import currentThread
+import tvm
+from tvm.relay.testing import run_opt_pass
+from tvm import relay
+from tvm.relay import transform, build_module
 
 # Graph Json Structure
 #
@@ -43,7 +47,7 @@ class TVMSlicer:
     def get_mark(self):
         return self.dfs_list
 
-    def slice_graph(self, start_nodes, end_nodes, is_quantize_sliced=False):
+    def slice_json_graph(self, start_nodes, end_nodes, is_quantize_sliced=False):
         graph_config = copy.deepcopy(self.graph_config)
 
         def dfs(cur_node_index, upper_bound, mark_list):
@@ -52,6 +56,9 @@ class TVMSlicer:
                 return mark_list
 
             # Check upper bound
+            if cur_node_index < 0:
+                return mark_list
+                
             if cur_node_index == upper_bound:
                 mark_list.append(cur_node_index)
                 return mark_list
@@ -328,6 +335,219 @@ class TVMSlicer:
         # print(output_nodes)
         return [sliced_graph_config, input_nodes, output_nodes.tolist()]
 
+
+    def slice_relay_graph(self, expr, split_conf, params, is_quantize=False):
+        """Splitting the graph into a list of subgraphs"""
+
+        def dequant(node, scale=7.0, zero_point=18.0):
+            deqnode = relay.cast(node, dtype='float32')
+            deqnode = relay.divide(deqnode, relay.const(scale))
+            deqnode = relay.add(deqnode, relay.const(zero_point))
+            return deqnode
+
+        def quant(node, scale=7.0, zero_point=18.0):
+            qnode = relay.subtract(node, relay.const(zero_point))
+            qnode = relay.multiply(qnode, relay.const(scale))
+            qnode = relay.round(qnode)
+            qnode = relay.clip(qnode, a_min=-128.0, a_max=127.0)
+            qnode = relay.cast(qnode, dtype='int8')
+            return qnode
+
+        def get_dep_var(sub_var_dep):
+            return [var for var in sub_var_dep[len(sub_var_dep) - 1]["ref_nodes"]]
+
+        def parse_dependency(value, snode_dep, new_input_idx):
+            new_args = []
+            need_update = False
+            for var in value.args:
+                is_free_var = False
+                for dep in snode_dep[:-1]:
+                    if var in dep["nodes"]:
+                        dep["nodes"][var] += 1
+                        dep["ref_nodes"][var] = dep["nodes"][var]
+                        is_free_var = True
+
+                if is_free_var:
+                    need_update = True
+                    original_var = relay.var(f"{var.name_hint}", var.checked_type)
+                    new_args.append(original_var)
+                    new_input_idx += 1
+                else:
+                    new_args.append(var)
+
+            if need_update:
+                value = tvm.relay.expr.Call(
+                    value.op, new_args, value.attrs, value.type_args, value.span
+                )
+            return value, snode_dep, new_input_idx
+
+        def merge_constant_expr(constant_expr, expr):
+            if not isinstance(constant_expr.body, tvm.relay.expr.Let):
+                return tvm.relay.expr.Let(constant_expr.var, constant_expr.value, expr)
+
+            return tvm.relay.expr.Let(
+                constant_expr.var, constant_expr.value, merge_constant_expr(constant_expr.body, expr)
+            )
+
+        def _recursion(anf, pipeline_mods, split_conf, constant_expr):
+            nonlocal operator_index_map
+            nonlocal new_input_idx
+            nonlocal snode_dep
+            cur_node_dep = snode_dep[len(snode_dep) - 1]
+            if isinstance(anf, tvm.relay.Function):
+                return tvm.relay.Function(
+                    anf.params,
+                    _recursion(anf.body, pipeline_mods, split_conf, constant_expr),
+                    anf.ret_type,
+                    anf.type_params,
+                    anf.attrs,
+                )
+            if isinstance(anf, tvm.relay.expr.Let):
+                value = anf.value
+                if isinstance(value, tvm.relay.expr.Constant):
+                    if not constant_expr:
+                        constant_expr = tvm.relay.expr.Let(anf.var, value, anf.var)
+                    else:
+                        constant_expr = tvm.relay.expr.Let(anf.var, value, constant_expr)
+                if isinstance(value, tvm.relay.expr.Call):
+                    new_args = []
+                    # build current var list
+                    cur_node_dep["nodes"][anf.var] = 0
+                    # Get the dependency information of the nodes.
+                    value, snode_dep, new_input_idx = parse_dependency(value, snode_dep, new_input_idx)
+                    # need wraping dequant logic
+                    # if need_quant:
+                        
+                    if isinstance(value.op, tvm.ir.Op):
+                        if value.op.name in operator_index_map:
+                            operator_index_map[value.op.name] += 1
+                        else:
+                            operator_index_map[value.op.name] = 0
+                        split_operator_name = split_conf[0]["op_name"] if split_conf else ""
+                        split_operator_index = split_conf[0]["op_index"] if split_conf else ""
+                        # if a operator name and repeating count in the network match with the values
+                        # of the 'split configuration', then this place is where we should do the
+                        # graph splitting.
+                        if (
+                            split_conf
+                            and split_operator_name in operator_index_map
+                            and operator_index_map[split_operator_name] >= split_operator_index
+                        ):
+                            split_conf.pop(0)
+                            snode_dep.append({"nodes": {}, "ref_nodes": {}})
+                            ann = _recursion(
+                                anf.body,
+                                pipeline_mods,
+                                split_conf,
+                                constant_expr,
+                            )
+                            snode_dep.pop()
+                            dep_vars = get_dep_var(snode_dep)
+                            body = relay.Tuple(dep_vars) if len(dep_vars) > 1 else anf.var
+                            if constant_expr:
+                                ann = merge_constant_expr(constant_expr, ann)
+                            pipeline_mods.insert(0, ann)
+                            return tvm.relay.expr.Let(anf.var, value, body)
+              
+                return tvm.relay.expr.Let(
+                    anf.var,
+                    value,
+                    _recursion(anf.body, pipeline_mods, split_conf, constant_expr),
+                )
+            else:
+                return anf
+        
+        def getting_inputs(mod):
+            return relay.analysis.free_vars(mod)
+
+        def setting_outputs(anf, name_hints, outputs, names, is_quantize=False):
+            if isinstance(anf, tvm.relay.Function):
+                return tvm.relay.Function(
+                    anf.params,
+                    setting_outputs(anf.body, name_hints, outputs, names, is_quantize),
+                    anf.ret_type,
+                    anf.type_params,
+                    anf.attrs,
+                )
+            if isinstance(anf, tvm.relay.expr.Let):
+                value = anf.value
+                if anf.var.name_hint in name_hints:
+                    outputs.append(anf)
+                return tvm.relay.expr.Let(
+                    anf.var,
+                    value,
+                    setting_outputs(anf.body, name_hints, outputs, names, is_quantize),
+                )
+            else:
+                new_outputs = []
+                for o in outputs:
+                    new_outputs.append(o.var)
+                    names.append(o.var.name_hint)
+                if anf.name_hint not in names:
+                    new_outputs.append(anf)
+                    names.append(anf.name_hint)
+                if is_quantize:
+                    new_outputs = list(map(quant, new_outputs))
+                new_map = tvm.relay.expr.Tuple(new_outputs)
+                return new_map
+
+        ################################################
+
+        snode_dep = [{"nodes": {}, "ref_nodes": {}}]
+        pipeline_mods = []
+        operator_index_map = {}
+        new_input_idx = 0
+        constant_expr = None
+        subgraph_split_conf = split_conf.copy()
+        if params:
+            expr = build_module.bind_params_by_name(expr, params)
+        anf = run_opt_pass(expr, transform.ToANormalForm())
+        anf = run_opt_pass(anf, transform.InferType())
+        ann = _recursion(
+            anf,
+            pipeline_mods,
+            subgraph_split_conf,
+            constant_expr,
+        )
+        pipeline_mods.insert(0, ann.body)
+
+        ################################################
+
+        input_name_hints = []
+        for idx, mod in enumerate(pipeline_mods):
+            free_vars = getting_inputs(mod)
+            new_input_vars = []
+            if is_quantize and idx > 0:
+                for free_var in free_vars:
+                    new_input_var = tvm.relay.expr.Var(free_var.name_hint+"_deq", relay.TensorType(free_var.type_annotation.shape, 'int8'))
+                    new_input_vars.append([free_var, dequant(new_input_var)])
+                modmod = mod
+                for ov, nv in new_input_vars:
+                    new_anf = tvm.relay.expr.Let(ov, nv, modmod)
+                    modmod = new_anf 
+                pipeline_mods[idx] = modmod
+            input_name_hints.append([free_var.name_hint for free_var in free_vars])
+
+        ################################################
+
+        total_input_name_hints = []
+        for name_hints in input_name_hints:
+            total_input_name_hints.extend(name_hints)
+        
+        output_name_hints = []
+        for idx, mod in enumerate(pipeline_mods[:-1]):
+            names = []
+            out = setting_outputs(mod, total_input_name_hints, [], names, is_quantize)
+            pipeline_mods[idx] = out
+            output_name_hints.append(names)
+        
+        names = []
+        out = setting_outputs(pipeline_mods[-1], total_input_name_hints, [], names, False)
+        pipeline_mods[-1] = out
+        output_name_hints.append(names)
+            
+        return pipeline_mods, input_name_hints, output_name_hints
+        # return pipeline_mods, total_outputs
 
     def get_all_intermediate_node(self):
         intermediate_nodes = []
