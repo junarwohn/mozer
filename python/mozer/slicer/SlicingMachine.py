@@ -556,4 +556,13 @@ class TVMSlicer:
                 intermediate_nodes.append(idx)
         return intermediate_nodes
 
+    def get_node_count(self, mod, pattern):
+        """Count the number of occurrences of each operator in the module"""
+        total_counter = 0
+        def visit(node):
+            nonlocal total_counter
+            if pattern.match(node):
+                total_counter += 1
+        relay.analysis.post_order_visit(mod["main"], visit)
+        return total_counter
 
