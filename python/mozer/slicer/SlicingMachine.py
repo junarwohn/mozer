@@ -483,9 +483,15 @@ class TVMSlicer:
                 for o in outputs:
                     new_outputs.append(o.var)
                     names.append(o.var.name_hint)
-                if anf.name_hint not in names:
-                    new_outputs.append(anf)
-                    names.append(anf.name_hint)
+                if isinstance(anf, tvm.relay.expr.Tuple):
+                    for var in anf:
+                        if var.name_hint not in names:
+                            new_outputs.append(var)
+                            names.append(var.name_hint)
+                else:
+                    if anf.name_hint not in names:
+                        new_outputs.append(anf)
+                        names.append(anf.name_hint)
                 if is_quantize:
                     new_outputs = list(map(quant, new_outputs))
                 new_map = tvm.relay.expr.Tuple(new_outputs)
@@ -527,7 +533,6 @@ class TVMSlicer:
                     modmod = new_anf 
                 pipeline_mods[idx] = modmod
             input_name_hints.append([free_var.name_hint for free_var in free_vars])
-
         ################################################
 
         total_input_name_hints = []
